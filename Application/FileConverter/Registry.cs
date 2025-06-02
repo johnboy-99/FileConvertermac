@@ -80,13 +80,20 @@ namespace FileConverter
             }
         }
 
+        private const string AppName = "FileConverter"; // Application name for settings directory
+
         private static string GetUserRegistryFilePath
         {
             get
             {
-                string path = FileConverterExtension.PathHelpers.GetUserDataFolderPath;
-                path = Path.Combine(path, "Registry.xml");
-                return path;
+                // Use Environment.SpecialFolder.ApplicationData for cross-platform application settings.
+                // This typically maps to:
+                // Windows: C:\Users\<User>\AppData\Roaming
+                // macOS: /Users/<User>/.config (or sometimes ~/Library/Application Support)
+                // Linux: /home/<User>/.config
+                string appDataBasePaath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string appSpecificSettingsDir = Path.Combine(appDataBasePaath, AppName);
+                return Path.Combine(appSpecificSettingsDir, "Registry.xml");
             }
         }
 
@@ -139,11 +146,19 @@ namespace FileConverter
 
             try
             {
+                // Ensure the directory exists before saving.
+                string directoryPath = Path.GetDirectoryName(registryFilePath);
+                if (!string.IsNullOrEmpty(directoryPath) && !Directory.Exists(directoryPath))
+                {
+                    Directory.CreateDirectory(directoryPath);
+                }
+
                 XmlHelpers.SaveToFile("Registry", registryFilePath, this);
             }
             catch (Exception exception)
             {
-                Diagnostics.Debug.LogError($"Fail to save registry. {exception.Message}");
+                // Log detailed error, including path if possible (be careful with PII).
+                Diagnostics.Debug.LogError($"Fail to save registry to '{registryFilePath}'. Exception: {exception.Message}");
             }
         }
         

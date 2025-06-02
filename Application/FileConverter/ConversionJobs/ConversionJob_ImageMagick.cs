@@ -28,6 +28,15 @@ namespace FileConverter.ConversionJobs
             base.Initialize();
 
             string applicationDirectory = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            // For macOS (and Linux), Magick.NET will search for a Ghostscript executable named "gs".
+            // This executable, along with its required library files (e.g., libgs.dylib),
+            // needs to be included within the application bundle, typically in a location
+            // that `SetGhostscriptDirectory` can point to, or in a standard system path
+            // where Magick.NET can find it.
+            // For example, if "gs" is placed in `Contents/Frameworks/gs/bin/gs` within the bundle,
+            // then applicationDirectory or a path relative to it should be passed here.
+            // If Ghostscript is installed via Homebrew, Magick.NET might find it if /usr/local/bin is in PATH,
+            // but bundling is more reliable for distribution.
             MagickNET.SetGhostscriptDirectory(applicationDirectory);
 
             this.isInputFilePdf = System.IO.Path.GetExtension(this.InputFilePath).ToLowerInvariant() == ".pdf";

@@ -51,8 +51,12 @@ namespace FileConverter.ConversionJobs
         {
             get
             {
+                // TODO: For macOS, more robust FFmpeg path searching will be needed:
+                // 1. Check inside the app bundle (e.g., Frameworks or Resources directory).
+                // 2. Check standard system PATH locations if not found in bundle.
+                // For now, we assume it's alongside the main executable or will be in PATH.
                 string applicationDirectory = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-                return System.IO.Path.Combine(applicationDirectory, "ffmpeg.exe");
+                return System.IO.Path.Combine(applicationDirectory, "ffmpeg"); // Changed "ffmpeg.exe" to "ffmpeg"
             }
         }
 
