@@ -1,4 +1,4 @@
-﻿// <copyright file="ConversionJob_FFMPEG.cs" company="AAllard">License: http://www.gnu.org/licenses/gpl.html GPL version 3.</copyright>
+// <copyright file="ConversionJob_FFMPEG.cs" company="AAllard">License: http://www.gnu.org/licenses/gpl.html GPL version 3.</copyright>
 
 namespace FileConverter.ConversionJobs
 {
@@ -7,10 +7,13 @@ namespace FileConverter.ConversionJobs
     using System.Diagnostics;
     using System.Globalization;
     using System.IO;
+    using System.Reflection; // Added for Assembly.GetExecutingAssembly()
+    using System.Runtime.InteropServices; // Added for RuntimeInformation
     using System.Text.RegularExpressions;
     using CommunityToolkit.Mvvm.DependencyInjection;
     using FileConverter.Controls;
     using FileConverter.Services;
+    using FileConverter.Core; // Added for ExternalToolLocator
 
     public partial class ConversionJob_FFMPEG : ConversionJob
     {
@@ -51,12 +54,7 @@ namespace FileConverter.ConversionJobs
         {
             get
             {
-                // TODO: For macOS, more robust FFmpeg path searching will be needed:
-                // 1. Check inside the app bundle (e.g., Frameworks or Resources directory).
-                // 2. Check standard system PATH locations if not found in bundle.
-                // For now, we assume it's alongside the main executable or will be in PATH.
-                string applicationDirectory = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-                return System.IO.Path.Combine(applicationDirectory, "ffmpeg"); // Changed "ffmpeg.exe" to "ffmpeg"
+                return ExternalToolLocator.GetFFmpegPath();
             }
         }
 
@@ -72,10 +70,18 @@ namespace FileConverter.ConversionJobs
             this.ffmpegProcessStartInfo = null;
 
             string ffmpegPath = this.FfmpegPath;
-            if (!System.IO.File.Exists(ffmpegPath))
+            // Check if the path returned by ExternalToolLocator is a simple name (needs PATH) or a full path
+            bool isFullPath = Path.IsPathRooted(ffmpegPath);
+
+            if (!isFullPath) // If it's not a full path, we can't directly check File.Exists in the same way.
+            {
+                 // We have to assume it's in PATH. Process.Start will fail if it's not.
+                 Diagnostics.Debug.Log($"FFmpeg path '{ffmpegPath}' is not a full path. Assuming it's in system PATH.");
+            }
+            else if (!System.IO.File.Exists(ffmpegPath))
             {
                 this.ConversionFailed(Properties.Resources.ErrorCantFindFFMPEG);
-                Diagnostics.Debug.Log($"Can't find ffmpeg executable ({ffmpegPath}). Try to reinstall the application.");
+                Diagnostics.Debug.Log($"Can't find ffmpeg executable at specified path ({ffmpegPath}). Check bundled ExternalTools or system PATH.");
                 return;
             }
 
@@ -273,13 +279,24 @@ namespace FileConverter.ConversionJobs
                             audioArgs = $"-c:a aac -qscale:a {this.AACBitrateToQualityIndex(audioEncodingBitrate)}";
                         }
 
-                        string videoCodec = "libx264";
+                        string videoCodec = "libx264"; // Default software codec
                         string hwAccelArg = "";
-                        if (hwAccel == Helpers.HardwareAccelerationMode.CUDA)
+
+                        // Hardware acceleration logic - currently Windows/NVIDIA specific
+                        // TODO: Implement macOS hardware acceleration (VideoToolbox) if desired.
+                        // This would involve different codec names (e.g., h264_videotoolbox) and hwaccel arguments.
+                        if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) &&
+                            hwAccel == Helpers.HardwareAccelerationMode.CUDA)
                         {
-                            videoCodec = "h264_nvenc";
+                            videoCodec = "h264_nvenc"; // NVIDIA CUDA accelerated codec
                             hwAccelArg = "-hwaccel cuda -hwaccel_output_format cuda";
                         }
+                        // else if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX) &&
+                        //          hwAccel == Helpers.HardwareAccelerationMode.VideoToolbox) // Example for future macOS support
+                        // {
+                        //     videoCodec = "h264_videotoolbox";
+                        //     // hwAccelArg might involve other settings for VideoToolbox
+                        // }
 
                         string encoderArgs = string.Format(
                             "-c:v {0} -preset {1} -crf {2} {3} {4}",

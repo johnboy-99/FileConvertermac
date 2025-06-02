@@ -1,11 +1,12 @@
-﻿// <copyright file="ConversionJob_ImageMagick.cs" company="AAllard">License: http://www.gnu.org/licenses/gpl.html GPL version 3.</copyright>
+// <copyright file="ConversionJob_ImageMagick.cs" company="AAllard">License: http://www.gnu.org/licenses/gpl.html GPL version 3.</copyright>
 
 namespace FileConverter.ConversionJobs
 {
     using System;
-
+    using System.IO; // Required for Path.GetExtension, Path.Combine, Directory.Exists
     using FileConverter.Diagnostics;
     using ImageMagick;
+    using FileConverter.Core; // Added for ExternalToolLocator
 
     public class ConversionJob_ImageMagick : ConversionJob
     {
@@ -27,19 +28,39 @@ namespace FileConverter.ConversionJobs
         {
             base.Initialize();
 
-            string applicationDirectory = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-            // For macOS (and Linux), Magick.NET will search for a Ghostscript executable named "gs".
-            // This executable, along with its required library files (e.g., libgs.dylib),
-            // needs to be included within the application bundle, typically in a location
-            // that `SetGhostscriptDirectory` can point to, or in a standard system path
-            // where Magick.NET can find it.
-            // For example, if "gs" is placed in `Contents/Frameworks/gs/bin/gs` within the bundle,
-            // then applicationDirectory or a path relative to it should be passed here.
-            // If Ghostscript is installed via Homebrew, Magick.NET might find it if /usr/local/bin is in PATH,
-            // but bundling is more reliable for distribution.
-            MagickNET.SetGhostscriptDirectory(applicationDirectory);
+            string gsDirectory = ExternalToolLocator.GetGhostscriptDirectory();
+            if (!string.IsNullOrEmpty(gsDirectory) && Directory.Exists(gsDirectory))
+            {
+                MagickNET.SetGhostscriptDirectory(gsDirectory);
+                Diagnostics.Debug.Log($"Set Ghostscript directory for Magick.NET to: {gsDirectory}");
 
-            this.isInputFilePdf = System.IO.Path.GetExtension(this.InputFilePath).ToLowerInvariant() == ".pdf";
+                // EXPERIMENTAL: Attempt to set GS_LIB for bundled Ghostscript if 'lib' subdir exists
+                // This helps Ghostscript find its own resources (fonts, etc.) when bundled.
+                string gsLibPath = Path.Combine(gsDirectory, "lib");
+                if (Directory.Exists(gsLibPath))
+                {
+                    string currentGsLib = Environment.GetEnvironmentVariable("GS_LIB");
+                    string newGsLib = gsLibPath;
+                    if (!string.IsNullOrEmpty(currentGsLib))
+                    {
+                        // Prepend our path, so it's searched first, but include existing paths.
+                        newGsLib = $"{gsLibPath}{Path.PathSeparator}{currentGsLib}";
+                    }
+                    Environment.SetEnvironmentVariable("GS_LIB", newGsLib);
+                    Diagnostics.Debug.Log($"Set GS_LIB to: {newGsLib}");
+                }
+                else
+                {
+                    Diagnostics.Debug.Log($"Ghostscript 'lib' subdirectory not found at '{gsLibPath}'. GS_LIB not set by FileConverter.");
+                }
+            }
+            else
+            {
+                // If ExternalToolLocator returns empty or invalid path, Magick.NET will try to find Ghostscript in system PATH.
+                Diagnostics.Debug.LogWarning("Ghostscript directory from ExternalToolLocator is not valid or not found. ImageMagick PDF/PS processing may fail if Ghostscript is not in system PATH.");
+            }
+
+            this.isInputFilePdf = Path.GetExtension(this.InputFilePath).ToLowerInvariant() == ".pdf";
 
             if (this.ConversionPreset == null)
             {
@@ -51,16 +72,23 @@ namespace FileConverter.ConversionJobs
         {
             if (System.IO.Path.GetExtension(this.InputFilePath).ToLowerInvariant() == ".pdf")
             {
-                using (MagickImageCollection images = new MagickImageCollection())
+                // This part might fail if Ghostscript is not properly configured and found by Magick.NET
+                try
                 {
-                    MagickReadSettings settings = new MagickReadSettings();
-                    settings.Density = new Density(1, 1);
-                    images.Read(this.InputFilePath);
-
-                    return images.Count;
+                    using (MagickImageCollection images = new MagickImageCollection())
+                    {
+                        MagickReadSettings settings = new MagickReadSettings();
+                        settings.Density = new Density(1, 1); // Use low density for quick page count
+                        images.Read(this.InputFilePath, settings);
+                        return images.Count > 0 ? images.Count : 1; // Ensure at least 1 if file exists
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Diagnostics.Debug.LogError($"Failed to read PDF for page count, possibly due to Ghostscript issue: {ex.Message}");
+                    return 1; // Fallback to 1 page if reading fails
                 }
             }
-
             return 1;
         }
 
@@ -82,33 +110,35 @@ namespace FileConverter.ConversionJobs
                 this.pageCount = 1;
                 MagickReadSettings readSettings = new MagickReadSettings();
 
-                string inputExtension = System.IO.Path.GetExtension(this.InputFilePath).ToLowerInvariant();
+                string inputExtension = Path.GetExtension(this.InputFilePath).ToLowerInvariant();
                 switch (inputExtension)
                 {
                     case ".cr2":
-                        // Requires an explicit image format otherwise the image is interpreted as a TIFF image.
                         readSettings.Format = MagickFormat.Cr2;
                         break;
-
                     case ".dng":
-                        // Requires an explicit image format otherwise the image is interpreted as a TIFF image.
                         readSettings.Format = MagickFormat.Dng;
                         break;
-
                     case ".gif":
-                        // Get the first frame of the gif for conversion.
-                        // Maybe in the future make this user selectable.
-                        readSettings.FrameIndex = 0;
+                        readSettings.FrameIndex = 0; // Get the first frame
+                        readSettings.FrameCount = 1; // Process only one frame
                         break;
-
                     default:
                         break;
                 }
 
-                using (MagickImage image = new MagickImage(this.InputFilePath, readSettings))
+                try
                 {
-                    Debug.Log($"Load image {this.InputFilePath} succeed.");
-                    this.ConvertImage(image);
+                    using (MagickImage image = new MagickImage(this.InputFilePath, readSettings))
+                    {
+                        Debug.Log($"Load image {this.InputFilePath} succeed.");
+                        this.ConvertImage(image);
+                    }
+                }
+                catch (MagickException ex)
+                {
+                    Debug.LogError($"ImageMagick error processing non-PDF file '{this.InputFilePath}': {ex.Message}");
+                    this.ConversionFailed($"ImageMagick error: {ex.Message}");
                 }
             }
         }
@@ -118,44 +148,55 @@ namespace FileConverter.ConversionJobs
             MagickReadSettings settings = new MagickReadSettings();
 
             float dpi = BaseDpiForPdfConversion;
-            float scaleFactor = this.ConversionPreset.GetSettingsValue<float>(ConversionPreset.ConversionSettingKeys.ImageScale);
-            if (Math.Abs(scaleFactor - 1f) >= 0.005f)
+            if (this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageScale))
             {
-                Debug.Log($"Apply scale factor: {scaleFactor * 100}%.");
-
-                dpi *= scaleFactor;
+                float scaleFactor = this.ConversionPreset.GetSettingsValue<float>(ConversionPreset.ConversionSettingKeys.ImageScale);
+                if (Math.Abs(scaleFactor - 1f) >= 0.005f)
+                {
+                    Debug.Log($"Apply scale factor: {scaleFactor * 100}%.");
+                    dpi *= scaleFactor;
+                }
             }
 
-            Debug.Log($"Density: {dpi}dpi.");
+
+            Debug.Log($"Density for PDF reading: {dpi}dpi.");
             settings.Density = new Density(dpi * PdfSuperSamplingRatio);
 
             this.UserState = Properties.Resources.ConversionStateReadDocument;
 
-            using (MagickImageCollection images = new MagickImageCollection())
+            try
             {
-                // Add all the pages of the pdf file to the collection
-                images.Read(this.InputFilePath, settings);
-                Debug.Log($"Load pdf {this.InputFilePath} succeed.");
-
-                this.pageCount = images.Count;
-
-                this.UserState = Properties.Resources.ConversionStateConversion;
-
-                foreach (MagickImage image in images)
+                using (MagickImageCollection images = new MagickImageCollection())
                 {
-                    Debug.Log($"Write page {this.CurrentOutputFilePathIndex + 1}/{this.pageCount}.");
+                    images.Read(this.InputFilePath, settings);
+                    Debug.Log($"Load pdf {this.InputFilePath} succeed. Page count: {images.Count}");
 
-                    if (PdfSuperSamplingRatio > 1)
-                    {
-#pragma warning disable CS0162 // Unreachable code detected
-                        image.Scale(new Percentage(100 / PdfSuperSamplingRatio));
-#pragma warning restore CS0162 // Unreachable code detected
+                    this.pageCount = images.Count;
+                    if (this.pageCount == 0) { // Should not happen if Read succeeds, but as safeguard
+                        this.ConversionFailed("PDF file contained no pages or could not be read correctly.");
+                        return;
                     }
 
-                    this.ConvertImage(image, true);
-                    
-                    this.CurrentOutputFilePathIndex++;
+
+                    this.UserState = Properties.Resources.ConversionStateConversion;
+
+                    foreach (MagickImage image in images)
+                    {
+                        Debug.Log($"Write page {this.CurrentOutputFilePathIndex + 1}/{this.pageCount}.");
+
+                        if (PdfSuperSamplingRatio > 1)
+                        {
+                            image.Scale(new Percentage(100.0 / PdfSuperSamplingRatio));
+                        }
+                        this.ConvertImage(image, true); // ignoreScale is true because PDF scaling is done via Density
+                        this.CurrentOutputFilePathIndex++;
+                    }
                 }
+            }
+            catch (MagickException ex)
+            {
+                Debug.LogError($"ImageMagick error processing PDF '{this.InputFilePath}': {ex.Message}");
+                this.ConversionFailed($"ImageMagick (PDF) error: {ex.Message}");
             }
         }
 
@@ -163,89 +204,94 @@ namespace FileConverter.ConversionJobs
         {
             image.Progress += this.Image_Progress;
 
-            if (!ignoreScale && this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageScale))
+            try
             {
-                float scaleFactor = this.ConversionPreset.GetSettingsValue<float>(ConversionPreset.ConversionSettingKeys.ImageScale);
-                if (Math.Abs(scaleFactor - 1f) >= 0.005f)
+                if (!ignoreScale && this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageScale))
                 {
-                    Debug.Log($"Apply scale factor: {scaleFactor * 100}%.");
-
-                    image.Scale(new Percentage(scaleFactor * 100f));
-                }
-            }
-
-            if (this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageRotation))
-            {
-                float rotateAngleInDegrees = this.ConversionPreset.GetSettingsValue<float>(ConversionPreset.ConversionSettingKeys.ImageRotation);
-                if (Math.Abs(rotateAngleInDegrees - 0f) >= 0.05f)
-                {
-                    Debug.Log($"Apply rotation: {rotateAngleInDegrees}°.");
-
-                    image.Rotate(rotateAngleInDegrees);
-                }
-            }
-
-            if (this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageClampSizePowerOf2))
-            {
-                bool clampSizeToPowerOf2 = this.ConversionPreset.GetSettingsValue<bool>(ConversionPreset.ConversionSettingKeys.ImageClampSizePowerOf2);
-                if (clampSizeToPowerOf2)
-                {
-                    uint referenceSize = System.Math.Min(image.Width, image.Height);
-                    uint size = 2;
-                    while (size * 2 <= referenceSize)
+                    float scaleFactor = this.ConversionPreset.GetSettingsValue<float>(ConversionPreset.ConversionSettingKeys.ImageScale);
+                    if (Math.Abs(scaleFactor - 1f) >= 0.005f)
                     {
-                        size *= 2;
+                        Debug.Log($"Apply scale factor: {scaleFactor * 100}%.");
+                        image.Scale(new Percentage(scaleFactor * 100f));
                     }
-
-                    Debug.Log($"Clamp size to the nearest power of 2 size (from {image.Width}x{image.Height} to {size}x{size}).");
-
-                    image.Scale(size, size);
                 }
-            }
 
-            if (this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageMaximumSize))
-            {
-                uint maximumSize = this.ConversionPreset.GetSettingsValue<uint>(ConversionPreset.ConversionSettingKeys.ImageMaximumSize);
-                if (maximumSize > 0)
+                if (this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageRotation))
                 {
-                    uint width = System.Math.Min(image.Width, maximumSize);
-                    uint height = System.Math.Min(image.Height, maximumSize);
-
-                    Debug.Log($"Clamp size to maximum size of {width}x{width} (from {image.Width}x{image.Height} to {width}x{height}).");
-
-                    image.Scale(width, height);
+                    float rotateAngleInDegrees = this.ConversionPreset.GetSettingsValue<float>(ConversionPreset.ConversionSettingKeys.ImageRotation);
+                    if (Math.Abs(rotateAngleInDegrees - 0f) >= 0.05f)
+                    {
+                        Debug.Log($"Apply rotation: {rotateAngleInDegrees}°.");
+                        image.Rotate(rotateAngleInDegrees);
+                    }
                 }
-            }
 
-            Debug.Log($"Convert image (output: {this.OutputFilePath}).");
-            switch (this.ConversionPreset.OutputType)
+                if (this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageClampSizePowerOf2))
+                {
+                    bool clampSizeToPowerOf2 = this.ConversionPreset.GetSettingsValue<bool>(ConversionPreset.ConversionSettingKeys.ImageClampSizePowerOf2);
+                    if (clampSizeToPowerOf2)
+                    {
+                        uint referenceSize = (uint)System.Math.Min(image.Width, image.Height);
+                        uint size = 2;
+                        while (size * 2 <= referenceSize && size * 2 > size) // Check for overflow with size * 2 > size
+                        {
+                            size *= 2;
+                        }
+                        Debug.Log($"Clamp size to the nearest power of 2 size (from {image.Width}x{image.Height} to {size}x{size}).");
+                        image.Scale(new MagickGeometry((int)size, (int)size)); // Resize, not just scale percentage
+                    }
+                }
+
+                if (this.ConversionPreset.IsRelevantSetting(ConversionPreset.ConversionSettingKeys.ImageMaximumSize))
+                {
+                    uint maximumSize = this.ConversionPreset.GetSettingsValue<uint>(ConversionPreset.ConversionSettingKeys.ImageMaximumSize);
+                    if (maximumSize > 0)
+                    {
+                        uint width = (uint)System.Math.Min(image.Width, maximumSize);
+                        uint height = (uint)System.Math.Min(image.Height, maximumSize);
+                        if (image.Width > width || image.Height > height) // Only scale if larger
+                        {
+                             Debug.Log($"Clamp size to maximum size of {width}x{height} (from {image.Width}x{image.Height}).");
+                             image.Scale(new MagickGeometry((int)width, (int)height)); // Resize, not just scale percentage
+                        }
+                    }
+                }
+
+                Debug.Log($"Convert image (output: {this.OutputFilePath}).");
+                switch (this.ConversionPreset.OutputType)
+                {
+                    case OutputType.Png:
+                        image.Format = MagickFormat.Png; // Ensure output format
+                        image.Quality = 95; // Example for PNG, though it's mostly about compression level
+                        break;
+                    case OutputType.Jpg:
+                        image.Format = MagickFormat.Jpg;
+                        image.Quality = this.ConversionPreset.GetSettingsValue<uint>(ConversionPreset.ConversionSettingKeys.ImageQuality);
+                        break;
+                    case OutputType.Pdf: // Converting an image (or PDF page) to a PDF
+                        image.Format = MagickFormat.Pdf;
+                        Debug.Log($"Density for PDF output: {BaseDpiForPdfConversion}dpi.");
+                        image.Density = new Density(BaseDpiForPdfConversion);
+                        break;
+                    case OutputType.Webp:
+                        image.Format = MagickFormat.WebP;
+                        image.Quality = this.ConversionPreset.GetSettingsValue<uint>(ConversionPreset.ConversionSettingKeys.ImageQuality);
+                        break;
+                    default:
+                        this.ConversionFailed(string.Format(Properties.Resources.ErrorUnsupportedOutputFormat, this.ConversionPreset.OutputType));
+                        return; // Return after calling ConversionFailed
+                }
+                image.Write(this.OutputFilePath);
+            }
+            catch (MagickException ex)
             {
-                case OutputType.Png:
-                    // http://stackoverflow.com/questions/27267073/imagemagick-lossless-max-compression-for-png
-                    image.Quality = 95;
-                    break;
-
-                case OutputType.Jpg:
-                    image.Quality = this.ConversionPreset.GetSettingsValue<uint>(ConversionPreset.ConversionSettingKeys.ImageQuality);
-                    break;
-
-                case OutputType.Pdf:
-                    Debug.Log($"Density: {BaseDpiForPdfConversion}dpi.");
-                    image.Density = new Density(BaseDpiForPdfConversion);
-                    break;
-
-                case OutputType.Webp:
-                    image.Quality = this.ConversionPreset.GetSettingsValue<uint>(ConversionPreset.ConversionSettingKeys.ImageQuality);
-                    break;
-
-                default:
-                    this.ConversionFailed(string.Format(Properties.Resources.ErrorUnsupportedOutputFormat, this.ConversionPreset.OutputType));
-                    image.Progress -= this.Image_Progress;
-                    return;
+                Debug.LogError($"ImageMagick error during image conversion operation: {ex.Message}");
+                this.ConversionFailed($"ImageMagick conversion error: {ex.Message}");
             }
-
-            image.Write(this.OutputFilePath);
-            image.Progress -= this.Image_Progress;
+            finally
+            {
+                 image.Progress -= this.Image_Progress;
+            }
         }
 
         private void Image_Progress(object sender, ProgressEventArgs eventArgs)
@@ -255,6 +301,7 @@ namespace FileConverter.ConversionJobs
                 eventArgs.Cancel = true;
                 return;
             }
+            if (this.pageCount == 0) return; // Avoid division by zero if pageCount isn't set
 
             float alreadyCompletedPages = this.CurrentOutputFilePathIndex / (float)this.pageCount;
             this.Progress = alreadyCompletedPages + ((float)eventArgs.Progress.ToDouble() / (100f * this.pageCount));
