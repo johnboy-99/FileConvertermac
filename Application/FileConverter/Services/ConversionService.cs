@@ -3,10 +3,13 @@
 namespace FileConverter.Services
 {
     using System;
+    using System; // Added for Console.WriteLine in #else block
     using System.Collections.Generic;
     using System.Collections.ObjectModel;
     using System.Threading;
-
+#if NETFRAMEWORK
+    using System.Windows.Forms; // For Clipboard
+#endif
     using CommunityToolkit.Mvvm.ComponentModel;
     using CommunityToolkit.Mvvm.DependencyInjection;
 
@@ -137,12 +140,21 @@ namespace FileConverter.Services
             }
 
             // Copy the output files to the clipboard
+#if NETFRAMEWORK
             if (this.settingsService.Settings.CopyFilesInClipboardAfterConversion && files.Count > 0)
             {
                 Thread clipboardThread = Helpers.InstantiateThread("CopyFilesToClipboardThread", this.CopyFilesToClipboard);
                 clipboardThread.SetApartmentState(ApartmentState.STA);
                 clipboardThread.Start(files);
             }
+#else
+            if (this.settingsService.Settings.CopyFilesInClipboardAfterConversion && files.Count > 0)
+            {
+                // TODO: Implement macOS clipboard copy for file paths
+                // This might involve using NSPasteboard via a Xamarin.Mac specific API or `pbcopy` command-line tool.
+                Console.WriteLine("Warning: Copy files to clipboard not implemented for this platform.");
+            }
+#endif
 
             bool allConversionsSucceed = true;
             for (int index = 0; index < this.conversionJobs.Count; index++)
@@ -180,6 +192,7 @@ namespace FileConverter.Services
             }
         }
 
+#if NETFRAMEWORK
         private void CopyFilesToClipboard(object _filePaths)
         {
             try
@@ -198,5 +211,6 @@ namespace FileConverter.Services
                 Debug.Log($"An exception has been thrown: {exception}.");
             }
         }
+#endif
     }
 }

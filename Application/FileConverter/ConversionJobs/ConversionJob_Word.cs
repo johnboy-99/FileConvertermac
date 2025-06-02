@@ -8,13 +8,16 @@ namespace FileConverter.ConversionJobs
 
     using FileConverter.Diagnostics;
 
+#if NETFRAMEWORK
     using Word = Microsoft.Office.Interop.Word;
+#endif
 
     public class ConversionJob_Word : ConversionJob_Office
     {
+#if NETFRAMEWORK
         private Word.Document document;
         private Word.Application application;
-
+#endif
         private string intermediateFilePath = string.Empty;
         private ConversionJob pdf2ImageConversionJob = null;
 
@@ -32,6 +35,7 @@ namespace FileConverter.ConversionJobs
 
         protected override int GetOutputFilesCount()
         {
+#if NETFRAMEWORK
             if (this.ConversionPreset.OutputType == OutputType.Pdf)
             {
                 return 1;
@@ -39,12 +43,24 @@ namespace FileConverter.ConversionJobs
 
             if (!this.TryLoadDocumentIfNecessary())
             {
-                return 1;
+                return 1; // If loading fails, assume 1 page
             }
 
-            int pagesCount = this.document.ComputeStatistics(Word.WdStatistic.wdStatisticPages);
+            if (this.document == null) return 1; // Document not available
 
-            return pagesCount;
+            try
+            {
+                int pagesCount = this.document.ComputeStatistics(Word.WdStatistic.wdStatisticPages);
+                return pagesCount > 0 ? pagesCount : 1; // Ensure at least 1
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Error getting page count from Word: {ex.Message}");
+                return 1; // Assume 1 page on error
+            }
+#else
+            return 1; // Office Interop not available
+#endif
         }
 
         protected override void Initialize()
@@ -60,7 +76,7 @@ namespace FileConverter.ConversionJobs
             {
                 throw new System.Exception("The conversion preset must be valid.");
             }
-
+#if NETFRAMEWORK
             // Initialize converters.
             if (this.ConversionPreset.OutputType == OutputType.Pdf)
             {
@@ -85,7 +101,7 @@ namespace FileConverter.ConversionJobs
             {
                 throw new System.Exception("The conversion preset must be valid.");
             }
-
+#if NETFRAMEWORK
             this.UserState = Properties.Resources.ConversionStateReadDocument;
 
             if (!this.TryLoadDocumentIfNecessary())
@@ -94,28 +110,57 @@ namespace FileConverter.ConversionJobs
                 return;
             }
 
-            // Make this document the active document.
-            this.document.Activate();
+            try
+            {
+                // Make this document the active document.
+                this.document.Activate();
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Error activating Word document: {ex.Message}");
+                this.ConversionFailed(Properties.Resources.ErrorUnableToUseMicrosoftOffice + " (activation failed)");
+                return;
+            }
 
             this.UserState = Properties.Resources.ConversionStateConversion;
 
             Debug.Log("Convert word document to pdf.");
-            // this.document.ExportAsFixedFormat(this.intermediateFilePath, Word.WdExportFormat.wdExportFormatPDF);
-            this.document.ExportAsFixedFormat(this.intermediateFilePath, 
-                Word.WdExportFormat.wdExportFormatPDF, 
-                false, 
-                Word.WdExportOptimizeFor.wdExportOptimizeForPrint, 
-                Word.WdExportRange.wdExportAllDocument, 
-                1, 1, 
-                Word.WdExportItem.wdExportDocumentContent, 
-                true, 
-                true, 
-                Word.WdExportCreateBookmarks.wdExportCreateHeadingBookmarks, 
-                true);
+            try
+            {
+                this.document.ExportAsFixedFormat(this.intermediateFilePath,
+                    Word.WdExportFormat.wdExportFormatPDF,
+                    false, // OpenAfterExport
+                    Word.WdExportOptimizeFor.wdExportOptimizeForPrint,
+                    Word.WdExportRange.wdExportAllDocument,
+                    1, // From page
+                    1, // To page (actually means all pages when wdExportAllDocument is used)
+                    Word.WdExportItem.wdExportDocumentContent,
+                    true, // IncludeDocProps
+                    true, // KeepIRM
+                    Word.WdExportCreateBookmarks.wdExportCreateHeadingBookmarks,
+                    true); // DocStructureTags
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Error exporting Word document to PDF: {ex.Message}");
+                this.ConversionFailed(Properties.Resources.ErrorUnableToUseMicrosoftOffice + " (export to PDF failed)");
+                return;
+            }
 
             Debug.Log($"Close word document '{this.InputFilePath}'.");
-            this.document.Close(Word.WdSaveOptions.wdDoNotSaveChanges);
-            this.document = null;
+            try
+            {
+                this.document.Close(Word.WdSaveOptions.wdDoNotSaveChanges);
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Error closing Word document: {ex.Message}");
+                // Continue to release app instance
+            }
+            finally
+            {
+                this.document = null;
+            }
 
             this.ReleaseOfficeApplicationInstanceIfNeeded();
             
@@ -150,8 +195,14 @@ namespace FileConverter.ConversionJobs
             }
         }
 
+#else
+            this.ConversionFailed(Properties.Resources.ErrorMicrosoftOfficeIsNotAvailable + " (Not available on this platform)");
+#endif
+        }
+
         protected override void InitializeOfficeApplicationInstanceIfNecessary()
         {
+#if NETFRAMEWORK
             if (this.application != null)
             {
                 return;
@@ -159,22 +210,43 @@ namespace FileConverter.ConversionJobs
 
             // Initialize word application.
             Debug.Log("Instantiate word application via interop.");
-            this.application = new Microsoft.Office.Interop.Word.Application
+            try
             {
-                Visible = false
-            };
+                this.application = new Word.Application
+                {
+                    Visible = false
+                    // application.DisplayAlerts = Word.WdAlertLevel.wdAlertsNone; // Example
+                };
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Failed to instantiate Word application: {ex.Message}");
+                this.application = null;
+            }
+#endif
         }
 
         protected override void ReleaseOfficeApplicationInstanceIfNeeded()
         {
-            if (this.application == null)
+#if NETFRAMEWORK
+            if (this.application != null)
             {
-                return;
+                try
+                {
+                    Diagnostics.Debug.Log("Quit word application via interop.");
+                    this.application.Quit(Word.WdSaveOptions.wdDoNotSaveChanges);
+                }
+                catch (System.Runtime.InteropServices.COMException ex)
+                {
+                    Debug.Log($"Error quitting Word application: {ex.Message}");
+                }
+                finally
+                {
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(this.application);
+                    this.application = null;
+                }
             }
-
-            Diagnostics.Debug.Log("Quit word application via interop.");
-            this.application.Quit();
-            this.application = null;
+#endif
         }
 
         private async Task UpdateProgress()
@@ -199,29 +271,47 @@ namespace FileConverter.ConversionJobs
 
         private bool TryLoadDocumentIfNecessary()
         {
+#if NETFRAMEWORK
             try
             {
                 this.InitializeOfficeApplicationInstanceIfNecessary();
             }
             catch (Exception exception)
             {
-                Debug.Log(exception.ToString());
-                Debug.Log("Failed to initialize office application.");
+                Debug.Log($"Unexpected error during InitializeOfficeApplicationInstanceIfNecessary (Word): {exception.ToString()}");
+                 if(this.application != null && !(this.application is Word.Application)) this.application = null;
             }
 
             if (this.application == null)
             {
+                Debug.Log("Word application instance is null, cannot load document.");
                 return false;
             }
 
             if (this.document == null)
             {
                 Debug.Log($"Load word document '{this.InputFilePath}'.");
-
-                this.document = this.application.Documents.Open(this.InputFilePath, System.Reflection.Missing.Value, true);
+                try
+                {
+                    // Parameters for Documents.Open: FileName, ConfirmConversions, ReadOnly, AddToRecentFiles, PasswordDocument, ...
+                    this.document = this.application.Documents.Open(
+                        FileName: this.InputFilePath,
+                        ConfirmConversions: false,
+                        ReadOnly: true,
+                        AddToRecentFiles: false
+                        // Other parameters are optional and Type.Missing can be used.
+                        );
+                }
+                catch (System.Runtime.InteropServices.COMException ex)
+                {
+                    Debug.Log($"Failed to open Word document '{this.InputFilePath}': {ex.Message}");
+                    this.document = null;
+                }
             }
-
             return this.document != null;
+#else
+            return false; // Office Interop not available
+#endif
         }
     }
 }

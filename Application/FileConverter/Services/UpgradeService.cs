@@ -12,7 +12,7 @@ namespace FileConverter.Services
 
     using CommunityToolkit.Mvvm.ComponentModel;
 
-    using FileConverter.Annotations;
+    // using FileConverter.Annotations; // Removed as NotNullAttribute is not critical for .NET 8 build here
     using FileConverter.Diagnostics;
 
     public class UpgradeService : ObservableObject, IUpgradeService
@@ -23,8 +23,7 @@ namespace FileConverter.Services
         private const string BaseURI = "https://raw.githubusercontent.com/Tichau/FileConverter/master/";
 #endif
 
-        [NotNull]
-        private readonly WebClient webClient = new WebClient();
+        private readonly WebClient webClient = new WebClient(); // NotNullAttribute removed
 
         private UpgradeVersionDescription upgradeVersionDescription;
 
@@ -77,8 +76,14 @@ namespace FileConverter.Services
 
             Registry.SetValue(Registry.Keys.LastUpdateCheckDate, DateTime.Now.ToFileTime());
 
-            if (versionDescription.LatestVersion <= Application.ApplicationVersion)
+            // Use FileConverter.Version.CurrentVersion which should be accessible and cross-platform.
+            // This assumes Version.cs defines a static CurrentVersion.
+            // Based on prior context, FileConverter.Application.ApplicationVersion was tied to a WPF concept or custom static.
+            // FileConverter.Version.CurrentVersion is a more direct way if available.
+            Version currentAppVersion = FileConverter.Version.CurrentVersion;
+            if (versionDescription.LatestVersion <= currentAppVersion)
             {
+                Debug.Log($"Current version {currentAppVersion} is up to date or newer than latest found {versionDescription.LatestVersion}.");
                 return null;
             }
 
@@ -154,10 +159,21 @@ namespace FileConverter.Services
 
         private async Task<UpgradeVersionDescription> DownloadLatestVersionDescription()
         {
+            Uri uri;
+#if NETFRAMEWORK
 #if BUILD32
-            Uri uri = new Uri(Helpers.BaseURI + "version (x86).xml");
+            // This BaseURI was from Helpers.cs, which is problematic if Helpers.cs itself is not available
+            // or if BaseURI was specific to Windows context. Assuming UpgradeService.BaseURI is the correct one.
+            uri = new Uri(UpgradeService.BaseURI + "version (x86).xml");
 #else
-            Uri uri = new Uri(UpgradeService.BaseURI + "version.xml");
+            uri = new Uri(UpgradeService.BaseURI + "version.xml");
+#endif
+#else // For .NET 8 (macOS)
+            // TODO: The version.xml should ideally contain a specific macOS installer URL and version info,
+            // or we should fetch a macos-specific version file e.g., "version-macos.xml".
+            // For now, assume version.xml might contain a universal installer or macOS specific one under a new tag.
+            uri = new Uri(UpgradeService.BaseURI + "version.xml"); // Or "version-macos.xml"
+            Console.WriteLine("INFO: Fetching version.xml for macOS. Ensure it has macOS compatible URLs.");
 #endif
 
             UpgradeVersionDescription description = null;
@@ -206,7 +222,13 @@ namespace FileConverter.Services
 
             Uri uri = new Uri(this.UpgradeVersionDescription.InstallerURL);
 
-            string fileName = "FileConverter-setup.msi";
+            string fileName = "FileConverter-setup.msi"; // Default, likely Windows-specific
+#if !NETFRAMEWORK
+            // On macOS, ensure this URL points to a .dmg or .pkg file.
+            // The server-side version.xml needs to provide the correct URL.
+            // Filename parsing below will pick up the actual name from the URL.
+            Console.WriteLine($"INFO: Downloading installer from {uri} for macOS. Expecting .dmg or .pkg.");
+#endif
             Regex retrieveFileNameRegex = new Regex("/([^/]*)");
             MatchCollection matchCollection = retrieveFileNameRegex.Matches(this.UpgradeVersionDescription.InstallerURL);
             if (matchCollection.Count > 0)

@@ -33,8 +33,10 @@ namespace FileConverter.ViewModels
             IConversionService settingsService = Ioc.Default.GetRequiredService<IConversionService>();
             this.ConversionJobs = new ObservableCollection<ConversionJob>(settingsService.ConversionJobs);
 
-            Application application = Application.Current as Application;
-            application.OnApplicationTerminate += this.Application_OnApplicationTerminate;
+            // Application application = Application.Current as Application; // WPF specific
+            // application.OnApplicationTerminate += this.Application_OnApplicationTerminate; // WPF specific
+            // TODO: macOS lifecycle events (like termination warnings) should be handled by AppDelegate
+            // and communicated to ViewModels if necessary via a shared service or events.
         }
 
         public string InformationMessage
@@ -117,29 +119,30 @@ namespace FileConverter.ViewModels
             this.OnPropertyChanged(nameof(this.ConversionJobs));
         }
 
-        private void Application_OnApplicationTerminate(object sender, ApplicationTerminateArgs eventArgs)
-        {
-            if (float.IsNaN(eventArgs.RemainingTimeBeforeTermination))
-            {
-                this.InformationMessage = string.Empty;
-                return;
-            }
-
-            int remaingingSeconds = (int)eventArgs.RemainingTimeBeforeTermination;
-
-            if (remaingingSeconds >= 2)
-            {
-                this.InformationMessage = string.Format(Properties.Resources.ApplicationWillTerminateInMultipleSeconds, remaingingSeconds);
-            }
-            else if (remaingingSeconds == 1)
-            {
-                this.InformationMessage = Properties.Resources.ApplicationWillTerminateInOneSecond;
-            }
-
-            if (remaingingSeconds <= 0)
-            {
-                this.InformationMessage = Properties.Resources.ApplicationIsTerminating;
-            }
-        }
+        // WPF-specific application termination logic removed.
+        // private void Application_OnApplicationTerminate(object sender, ApplicationTerminateArgs eventArgs)
+        // {
+        //     if (float.IsNaN(eventArgs.RemainingTimeBeforeTermination))
+        //     {
+        //         this.InformationMessage = string.Empty;
+        //         return;
+        //     }
+        //
+        //     int remaingingSeconds = (int)eventArgs.RemainingTimeBeforeTermination;
+        //
+        //     if (remaingingSeconds >= 2)
+        //     {
+        //         this.InformationMessage = string.Format(Properties.Resources.ApplicationWillTerminateInMultipleSeconds, remaingingSeconds);
+        //     }
+        //     else if (remaingingSeconds == 1)
+        //     {
+        //         this.InformationMessage = Properties.Resources.ApplicationWillTerminateInOneSecond;
+        //     }
+        //
+        //     if (remaingingSeconds <= 0)
+        //     {
+        //         this.InformationMessage = Properties.Resources.ApplicationIsTerminating;
+        //     }
+        // }
     }
 }

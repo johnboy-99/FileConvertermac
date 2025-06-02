@@ -7,15 +7,18 @@ namespace FileConverter.ConversionJobs
     using System.Threading.Tasks;
 
     using FileConverter.Diagnostics;
-    using Microsoft.Office.Core;
 
+#if NETFRAMEWORK
+    using Microsoft.Office.Core;
     using PowerPoint = Microsoft.Office.Interop.PowerPoint;
+#endif
 
     public class ConversionJob_PowerPoint : ConversionJob_Office
     {
+#if NETFRAMEWORK
         private PowerPoint.Presentation document;
         private PowerPoint.Application application;
-
+#endif
         private string intermediateFilePath = string.Empty;
         private ConversionJob pdf2ImageConversionJob = null;
 
@@ -33,6 +36,7 @@ namespace FileConverter.ConversionJobs
 
         protected override int GetOutputFilesCount()
         {
+#if NETFRAMEWORK
             if (this.ConversionPreset.OutputType == OutputType.Pdf)
             {
                 return 1;
@@ -40,11 +44,24 @@ namespace FileConverter.ConversionJobs
 
             if (!this.TryLoadDocumentIfNecessary())
             {
-                return 1;
+                return 1; // If loading fails, assume 1 page
             }
 
-            int pagesCount = this.document.Slides.Count;
-            return pagesCount;
+            if (this.document == null || this.document.Slides == null) return 1; // Document or slides collection not available
+
+            try
+            {
+                int pagesCount = this.document.Slides.Count;
+                return pagesCount > 0 ? pagesCount : 1; // Ensure at least 1
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Error getting slide count from PowerPoint: {ex.Message}");
+                return 1; // Assume 1 page on error
+            }
+#else
+            return 1; // Office Interop not available
+#endif
         }
 
         protected override void Initialize()
@@ -60,7 +77,7 @@ namespace FileConverter.ConversionJobs
             {
                 throw new System.Exception("The conversion preset must be valid.");
             }
-
+#if NETFRAMEWORK
             // Initialize converters.
             if (this.ConversionPreset.OutputType == OutputType.Pdf)
             {
@@ -85,7 +102,7 @@ namespace FileConverter.ConversionJobs
             {
                 throw new System.Exception("The conversion preset must be valid.");
             }
-
+#if NETFRAMEWORK
             this.UserState = Properties.Resources.ConversionStateReadDocument;
 
             if (!this.TryLoadDocumentIfNecessary())
@@ -97,11 +114,31 @@ namespace FileConverter.ConversionJobs
             this.UserState = Properties.Resources.ConversionStateConversion;
 
             Debug.Log("Convert PowerPoint document to pdf.");
-            this.document.ExportAsFixedFormat(this.intermediateFilePath, PowerPoint.PpFixedFormatType.ppFixedFormatTypePDF);
+            try
+            {
+                this.document.ExportAsFixedFormat(this.intermediateFilePath, PowerPoint.PpFixedFormatType.ppFixedFormatTypePDF);
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Error exporting PowerPoint document to PDF: {ex.Message}");
+                this.ConversionFailed(Properties.Resources.ErrorUnableToUseMicrosoftOffice + " (export to PDF failed)");
+                return;
+            }
 
             Debug.Log($"Close PowerPoint document '{this.InputFilePath}'.");
-            this.document.Close();
-            this.document = null;
+            try
+            {
+                this.document.Close();
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Error closing PowerPoint document: {ex.Message}");
+                // Continue to release app instance
+            }
+            finally
+            {
+                this.document = null;
+            }
 
             this.ReleaseOfficeApplicationInstanceIfNeeded();
             
@@ -136,8 +173,14 @@ namespace FileConverter.ConversionJobs
             }
         }
 
+#else
+            this.ConversionFailed(Properties.Resources.ErrorMicrosoftOfficeIsNotAvailable + " (Not available on this platform)");
+#endif
+        }
+
         protected override void InitializeOfficeApplicationInstanceIfNecessary()
         {
+#if NETFRAMEWORK
             if (this.application != null)
             {
                 return;
@@ -145,19 +188,42 @@ namespace FileConverter.ConversionJobs
 
             // Initialize PowerPoint application.
             Debug.Log("Instantiate PowerPoint application via interop.");
-            this.application = new PowerPoint.Application();
+            try
+            {
+                this.application = new PowerPoint.Application();
+                // Unlike Word/Excel, PowerPoint Application object doesn't have a Visible property directly.
+                // Visibility is usually controlled when opening/creating presentations.
+                // For automation, it's typically kept non-visible by not creating/showing windows.
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                Debug.Log($"Failed to instantiate PowerPoint application: {ex.Message}");
+                this.application = null;
+            }
+#endif
         }
 
         protected override void ReleaseOfficeApplicationInstanceIfNeeded()
         {
-            if (this.application == null)
+#if NETFRAMEWORK
+            if (this.application != null)
             {
-                return;
+                try
+                {
+                    Diagnostics.Debug.Log("Quit PowerPoint application via interop.");
+                    this.application.Quit();
+                }
+                catch (System.Runtime.InteropServices.COMException ex)
+                {
+                     Debug.Log($"Error quitting PowerPoint application: {ex.Message}");
+                }
+                finally
+                {
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(this.application);
+                    this.application = null;
+                }
             }
-
-            Diagnostics.Debug.Log("Quit PowerPoint application via interop.");
-            this.application.Quit();
-            this.application = null;
+#endif
         }
 
         private async Task UpdateProgress()
@@ -182,29 +248,46 @@ namespace FileConverter.ConversionJobs
         
         private bool TryLoadDocumentIfNecessary()
         {
+#if NETFRAMEWORK
             try
             {
                 this.InitializeOfficeApplicationInstanceIfNecessary();
             }
             catch (Exception exception)
             {
-                Debug.Log(exception.ToString());
-                Debug.Log("Failed to initialize office application.");
+                Debug.Log($"Unexpected error during InitializeOfficeApplicationInstanceIfNecessary (PowerPoint): {exception.ToString()}");
+                if(this.application != null && !(this.application is PowerPoint.Application)) this.application = null;
             }
 
             if (this.application == null)
             {
+                Debug.Log("PowerPoint application instance is null, cannot load document.");
                 return false;
             }
 
             if (this.document == null)
             {
                 Debug.Log($"Load PowerPoint document '{this.InputFilePath}'.");
-
-                this.document = this.application.Presentations.Open(this.InputFilePath, ReadOnly: MsoTriState.msoTrue, WithWindow: MsoTriState.msoFalse);
+                try
+                {
+                    // Parameters for Open: FileName, ReadOnly, Untitled, WithWindow
+                    this.document = this.application.Presentations.Open(
+                        this.InputFilePath,
+                        Microsoft.Office.Core.MsoTriState.msoTrue,  // ReadOnly
+                        Microsoft.Office.Core.MsoTriState.msoFalse, // Untitled (don't create a new untitled presentation if file not found)
+                        Microsoft.Office.Core.MsoTriState.msoFalse  // WithWindow (don't show UI window)
+                    );
+                }
+                catch (System.Runtime.InteropServices.COMException ex)
+                {
+                    Debug.Log($"Failed to open PowerPoint document '{this.InputFilePath}': {ex.Message}");
+                    this.document = null;
+                }
             }
-
             return this.document != null;
+#else
+            return false; // Office Interop not available
+#endif
         }
     }
 }

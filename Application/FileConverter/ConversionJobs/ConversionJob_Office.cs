@@ -2,6 +2,10 @@
 
 namespace FileConverter.ConversionJobs
 {
+    // No specific Office Interop usings directly here, but derived classes will have them.
+    // System might be needed for Console.WriteLine in #else blocks if we add logging there.
+    using System;
+
     public abstract class ConversionJob_Office : ConversionJob
     {
         protected ConversionJob_Office() : base()
@@ -32,6 +36,9 @@ namespace FileConverter.ConversionJobs
         {
             base.Initialize();
 
+            // Helpers.IsMicrosoftOfficeApplicationAvailable will be responsible for the platform check.
+            // If it correctly returns false on non-Windows, this logic remains valid.
+            // The Office Interop code itself in derived classes will be conditionally compiled.
             if (!Helpers.IsMicrosoftOfficeApplicationAvailable(this.Application))
             {
                 switch (this.Application)
@@ -58,10 +65,13 @@ namespace FileConverter.ConversionJobs
         protected override void OnConversionFailed()
         {
             base.OnConversionFailed();
-
+#if NETFRAMEWORK
             this.ReleaseOfficeApplicationInstanceIfNeeded();
+#endif
         }
 
+        // These methods will be implemented in derived classes and will contain Office Interop code,
+        // so their implementations in derived classes need to be conditionally compiled.
         protected abstract void InitializeOfficeApplicationInstanceIfNecessary();
 
         protected abstract void ReleaseOfficeApplicationInstanceIfNeeded();

@@ -9,10 +9,11 @@ namespace FileConverter.ViewModels
     using System.Diagnostics;
     using System.Globalization;
     using System.Linq;
-    using System.Windows.Data;
-    using System.Windows.Input;
+    // using System.Windows.Data; // Removed for ListCollectionView
+    using System.Windows.Input; // Kept for ICommand
+    using System.Collections.ObjectModel; // Added for ObservableCollection
 
-    using Microsoft.Win32;
+    // using Microsoft.Win32; // Removed for OpenFileDialog/SaveFileDialog
     
     using CommunityToolkit.Mvvm.ComponentModel;
     using CommunityToolkit.Mvvm.DependencyInjection;
@@ -20,7 +21,7 @@ namespace FileConverter.ViewModels
 
     using FileConverter.Annotations;
     using FileConverter.Services;
-    using FileConverter.Views;
+    // using FileConverter.Views; // Removed for TreeViewSelectionBehavior
 
     /// <summary>
     /// This class contains properties that the settings View can data bind to.
@@ -45,7 +46,8 @@ namespace FileConverter.ViewModels
         private RelayCommand saveCommand;
         private RelayCommand<CancelEventArgs> closeCommand;
 
-        private ListCollectionView outputTypes;
+        // private ListCollectionView outputTypes; // Changed to ObservableCollection
+        private ObservableCollection<OutputTypeViewModel> _outputTypesCollection;
         private CultureInfo[] supportedCultures;
         private Helpers.HardwareAccelerationMode[] hardwareAccelerationModes = { Helpers.HardwareAccelerationMode.Off, Helpers.HardwareAccelerationMode.CUDA };
 
@@ -88,8 +90,10 @@ namespace FileConverter.ViewModels
             outputTypeViewModels.Add(new OutputTypeViewModel(OutputType.Ico));
             outputTypeViewModels.Add(new OutputTypeViewModel(OutputType.Gif));
             outputTypeViewModels.Add(new OutputTypeViewModel(OutputType.Pdf));
-            this.outputTypes = new ListCollectionView(outputTypeViewModels);
-            this.outputTypes.GroupDescriptions.Add(new PropertyGroupDescription("Category"));
+            // this.outputTypes = new ListCollectionView(outputTypeViewModels); // Replaced
+            // this.outputTypes.GroupDescriptions.Add(new PropertyGroupDescription("Category")); // Grouping to be handled by UI
+            this.OutputTypes = new ObservableCollection<OutputTypeViewModel>(outputTypeViewModels);
+
 
             this.SupportedCultures = Helpers.GetSupportedCultures().ToArray();
 
@@ -243,12 +247,12 @@ namespace FileConverter.ViewModels
             }
         }
 
-        public ListCollectionView OutputTypes
+        public ObservableCollection<OutputTypeViewModel> OutputTypes // Changed from ListCollectionView
         {
-            get => this.outputTypes;
+            get => _outputTypesCollection;
             set
             {
-                this.outputTypes = value;
+                _outputTypesCollection = value;
                 this.OnPropertyChanged();
             }
         }
@@ -288,18 +292,19 @@ namespace FileConverter.ViewModels
 
         public ICommand CloseCommand => this.closeCommand;
 
-        public TreeViewSelectionBehavior.IsChildOfPredicate PresetsHierarchyPredicate => (object nodeA, object nodeB) =>
-            {
-                if (nodeA is PresetNode)
-                {
-                    return false;
-                }
-
-                PresetFolderNode parentFolder = nodeA as PresetFolderNode;
-                Diagnostics.Debug.Assert(parentFolder != null, "Node should be a preset folder.");
-
-                return parentFolder.IsNodeInHierarchy(nodeB as AbstractTreeNode, true);
-            };
+        // public TreeViewSelectionBehavior.IsChildOfPredicate PresetsHierarchyPredicate => (object nodeA, object nodeB) =>
+        //     {
+        //         if (nodeA is PresetNode)
+        //         {
+        //             return false;
+        //         }
+        //
+        //         PresetFolderNode parentFolder = nodeA as PresetFolderNode;
+        //         Diagnostics.Debug.Assert(parentFolder != null, "Node should be a preset folder.");
+        //
+        //         return parentFolder.IsNodeInHierarchy(nodeB as AbstractTreeNode, true);
+        //     };
+        // TODO: TreeView specific logic needs to be re-evaluated for Xamarin.Mac UI.
 
         public string Error
         {
@@ -592,28 +597,36 @@ namespace FileConverter.ViewModels
 
         private void ImportPreset()
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog
-            {
-                Title = "Import presets",
-                Filter = "Preset file (*.xml)|*.xml",
-                InitialDirectory = this.ImportDirectoryPath,
-            };
+            // TODO: macOS file import dialog needs to be shown by the View layer.
+            // The View should then call a method on the ViewModel passing the selected file path.
+            // For now, direct file dialog logic is removed.
+            // OpenFileDialog openFileDialog = new OpenFileDialog
+            // {
+            //     Title = "Import presets",
+            //     Filter = "Preset file (*.xml)|*.xml",
+            //     InitialDirectory = this.ImportDirectoryPath,
+            // };
 
-            if (openFileDialog.ShowDialog() == true)
+            // if (openFileDialog.ShowDialog() == true)
+            // {
+            //     string selectedFilePath = openFileDialog.FileName; // This would be passed from the View
+            string selectedFilePath = null; // Placeholder - this method is now effectively disabled without View interaction
+            if (!string.IsNullOrEmpty(selectedFilePath))
             {
-                if (!File.Exists(openFileDialog.FileName))
+                if (!File.Exists(selectedFilePath))
                 {
-                    Diagnostics.Debug.LogError("File does not exists.");
+                    Diagnostics.Debug.LogError("File does not exist.");
+                    return;
                 }
 
-                string directoryPath = Path.GetDirectoryName(openFileDialog.FileName);
+                string directoryPath = Path.GetDirectoryName(selectedFilePath);
                 if (!string.IsNullOrEmpty(directoryPath))
                 {
                     this.ImportDirectoryPath = directoryPath;
                 }
 
                 List<ConversionPreset> presetsToImport = new List<ConversionPreset>();
-                XmlHelpers.LoadFromFile("Presets", openFileDialog.FileName, out presetsToImport);
+                XmlHelpers.LoadFromFile("Presets", selectedFilePath, out presetsToImport);
 
                 // Add imported preset to preset tree.
                 bool itemSelected = false;
@@ -649,25 +662,30 @@ namespace FileConverter.ViewModels
 
         private void ExportSelectedPreset()
         {
-            SaveFileDialog saveFileDialog = new SaveFileDialog
-            {
-                Title = "Export selected preset or folder",
-                Filter = "Preset file (*.xml)|*.xml",
-                InitialDirectory = this.ImportDirectoryPath,
-            };
+            // TODO: macOS file export dialog needs to be shown by the View layer.
+            // The View should then call a method on the ViewModel passing the selected file path.
+            // SaveFileDialog saveFileDialog = new SaveFileDialog
+            // {
+            //     Title = "Export selected preset or folder",
+            //     Filter = "Preset file (*.xml)|*.xml",
+            //     InitialDirectory = this.ImportDirectoryPath,
+            // };
 
-            if (saveFileDialog.ShowDialog() == true)
+            // if (saveFileDialog.ShowDialog() == true)
+            // {
+            //    string selectedFilePath = saveFileDialog.FileName; // This would be passed from the View
+            string selectedFilePath = null; // Placeholder - this method is now effectively disabled
+            if (!string.IsNullOrEmpty(selectedFilePath))
             {
-                string filePath = saveFileDialog.FileName;
-                string directoryPath = Path.GetDirectoryName(filePath);
+                string directoryPath = Path.GetDirectoryName(selectedFilePath);
                 if (!string.IsNullOrEmpty(directoryPath))
                 {
                     this.ImportDirectoryPath = directoryPath;
                 }
 
-                if (Path.GetExtension(filePath) != ".xml")
+                if (Path.GetExtension(selectedFilePath) != ".xml")
                 {
-                    filePath += ".xml";
+                    selectedFilePath += ".xml";
                 }
 
                 this.settings.ConversionPresets.Clear();
